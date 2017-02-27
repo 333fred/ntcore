@@ -37,6 +37,7 @@ model {
                 cppCompiler.args '-pthread', '-std=c++1y'
                 linker.args '-pthread'
             }
+            it.properties.each { println it }
         }
     }
 }

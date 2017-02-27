@@ -1,74 +1,155 @@
-import org.gradle.internal.os.OperatingSystem
+apply plugin: 'cpp'
+apply plugin: 'google-test'
 
-buildscript {
-    repositories {
-        maven {
-            url "https://plugins.gradle.org/m2/"
+def compilerPrefix = project.hasProperty('compilerPrefix') ? project.compilerPrefix : 'arm-frc-linux-gnueabi-'
+model {
+    platforms {
+        arm {
+            architecture 'arm'
+            operatingSystem 'linux'
+        }
+        x86 {
+            architecture 'x86'
+        }
+        x64 {
+            architecture 'x64'
         }
     }
-    dependencies {
-        classpath 'net.ltgt.gradle:gradle-errorprone-plugin:0.0.8'
-        classpath 'gradle.plugin.edu.wpi.first.wpilib.versioning:wpilib-version-plugin:1.6'
+    toolChains {
+        gcc(Gcc) {
+            target('x86') {
+                cppCompiler.withArguments { args ->
+                    args << '-std=c++11' << '-Wformat=2' << '-Wall' << '-Wextra' << '-Werror' << '-pedantic'
+                    args << '-Wno-psabi' << '-Wno-unused-parameter' << '-fPIC' << '-rdynamic'
+                    //TODO: When the compiler allows us to actually call deprecated functions from within
+                    // deprecated function, remove this line (this will cause calling deprecated functions
+                    // to be treated as a warning rather than an error).
+                    args << '-Wno-error=deprecated-declarations' << '-pthread'
+                    args << '-m32'
+                }
+                linker.withArguments { args ->
+                    args << '-rdynamic' << '-pthread'
+                    args << '-m32'
+                }
+            }
+            target('x64') {
+                cppCompiler.withArguments { args ->
+                    args << '-std=c++11' << '-Wformat=2' << '-Wall' << '-Wextra' << '-Werror' << '-pedantic'
+                    args << '-Wno-psabi' << '-Wno-unused-parameter' << '-fPIC' << '-rdynamic'
+                    //TODO: When the compiler allows us to actually call deprecated functions from within
+                    // deprecated function, remove this line (this will cause calling deprecated functions
+                    // to be treated as a warning rather than an error).
+                    args << '-Wno-error=deprecated-declarations' << '-pthread'
+                }
+                linker.withArguments { args ->
+                    args << '-rdynamic' << '-pthread'
+                }
+            }
+        }
+        armGcc(Gcc) {
+            target("arm") {
+                // We use a custom-built cross compiler with the prefix arm-frc-linux-gnueabi-<util name>
+                // If this ever changes, the prefix will need to be changed here
+                cCompiler.executable = compilerPrefix + cCompiler.executable
+                cppCompiler.executable = compilerPrefix + cppCompiler.executable
+                linker.executable = compilerPrefix + linker.executable
+                assembler.executable = compilerPrefix + assembler.executable
+                // Gradle auto-adds the -m32 argument to the linker and compiler. Our compiler only supports
+                // arm, and doesn't understand this flag, so it is removed from both
+                cppCompiler.withArguments { args ->
+                    args << '-std=c++1y' << '-Wformat=2' << '-Wall' << '-Wextra' << '-Werror' << '-pedantic'
+                    args << '-Wno-psabi' << '-Wno-unused-parameter' << '-fPIC' << '-rdynamic'
+                    //TODO: When the compiler allows us to actually call deprecated functions from within
+                    // deprecated function, remove this line (this will cause calling deprecated functions
+                    // to be treated as a warning rather than an error).
+                    args << '-Wno-error=deprecated-declarations' << '-pthread'
+                    args.remove('-m32')
+                }
+                linker.withArguments { args ->
+                    args << '-rdynamic' << '-pthread'
+                    args.remove('-m32')
+                }
+                staticLibArchiver.executable = compilerPrefix + staticLibArchiver.executable
+            }
+        }
+    }
+
+    components {
+        wpiutil(NativeLibrarySpec) {
+            targetPlatform 'arm'
+            targetPlatform 'x86'
+            targetPlatform 'x64'
+
+            sources {
+                cpp {
+                    source {
+                        srcDirs = ["${rootDir}/wpiutil/src"]
+                        includes = ['**/*.cpp']
+                    }
+                    exportedHeaders {
+                        srcDirs = ["${rootDir}/wpiutil/include"]
+                        includes = ['**/*.h']
+                    }
+                }
+            }
+        }
+
+        ntcore(NativeLibrarySpec) {
+            targetPlatform 'arm'
+            targetPlatform 'x86'
+            targetPlatform 'x64'
+
+            sources {
+                cpp {
+                    source {
+                        srcDirs = ["${rootDir}/src"]
+                        includes = ['**/*.cpp']
+                    }
+                    exportedHeaders {
+                        srcDirs = ["${rootDir}/include"]
+                        includes = ['**/*.h']
+                    }
+                        lib library: 'wpiutil', linkage: 'static'
+                }
+            }
+        }
+    }
+    testSuites {
+        ntcoreTest {
+            sources {
+                cpp {
+                    source {
+                        srcDirs = ["${rootDir}/test/unit"]
+                        includes = ['**/*.cpp']
+                    }
+                    exportedHeaders {
+                        srcDirs = ["${rootDir}/include", "${rootDir}/src", "${rootDir}/wpiutil/include", "${rootDir}/gmock/include", "${rootDir}/gmock/gtest/include"]
+                        includes = ['**/*.h']
+                    }
+                }
+            }
+            binaries.all {
+                lib project: ':gmock', library: 'gmock', linkage: 'static'
+                lib library: 'ntcore', linkage: 'static'
+            }
+        }
+    }
+    binaries {
+        withType(GoogleTestTestSuiteBinarySpec) {
+            if (targetPlatform.name == 'arm' || testedBinary.component.name == 'wpiutil') {
+                buildable = false
+            } else {
+                lib project: ':gmock', library: "gmock", linkage: "static"
+                lib library: 'ntcore', linkage: 'static'
+                if (targetPlatform.operatingSystem.windows) {
+                    cppCompiler.args '/EHsc', '/DNOMINMAX', '/D_SCL_SECURE_NO_WARNINGS', '/D_WINSOCK_DEPRECATED_NO_WARNINGS'
+                } else {
+                    cppCompiler.args '-pthread', '-std=c++11'
+                    linker.args '-pthread'
+                }
+            }
+        }
     }
 }
 
-ext.buildArm = !project.hasProperty('skipArm')
-ext.includeJava = !project.hasProperty('skipJava')
-
-if (hasProperty('makeDesktop')) {
-    println 'Making desktop classifier jar. NOTE: This desktop version should only be used for local testing.' +
-            'It will only support the current platform, and will override fetching the latest development version from' +
-            ' the maven repo until you manually delete it!'
-}
-
-ext.getPlatformPath = { binary ->
-    if (binary.targetPlatform.architecture.arm) {
-        return 'Linux/arm'
-    } else if (binary.targetPlatform.operatingSystem.linux) {
-        if (binary.targetPlatform.architecture.amd64) {
-            return 'Linux/amd64'
-        } else {
-            return 'Linux/' + binary.targetPlatform.architecture.name
-        }
-    } else if (binary.targetPlatform.operatingSystem.windows) {
-        if (binary.targetPlatform.architecture.amd64) {
-            return 'Windows/amd64'
-        } else {
-            return 'Windows/' + binary.targetPlatform.architecture.name
-        }
-    } else if (binary.targetPlatform.operatingSystem.macOsX) {
-        if (binary.targetPlatform.architecture.amd64) {
-            return 'Mac OS X/x86_64'
-        } else {
-            return 'Mac OS X/' + binary.targetPlatform.architecture.name
-        }
-    } else {
-        return binary.targetPlatform.operatingSystem.name + '/' + binary.targetPlatform.architecture.name
-    }
-}
-
-ext.setupDefines = { project, binaries ->
-    binaries.all {
-	if (project.hasProperty('debug')) {
-	    project.setupDebugDefines(cppCompiler, linker)
-	} else {
-	    project.setupReleaseDefines(cppCompiler, linker)
-	}
-    }
-}
-
-apply from: "ntcore.gradle"
-apply from: "wpiutil.gradle"
-
-// Empty task for build so that ntcoreSourceZip and wpiutilSourceZip will be
-// built when running ./gradlew build
-task build
-
-build.dependsOn ntcoreSourceZip
-build.dependsOn wpiutilSourceZip
-
-apply from: 'publish.gradle'
-
-task wrapper(type: Wrapper) {
-    gradleVersion = '3.3'
-}
+task empty
